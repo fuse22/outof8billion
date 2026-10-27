@@ -14,21 +14,36 @@ DB_PATH = os.environ.get("DB_PATH") or ("/data/lives.db" if os.path.isdir("/data
 
 B_BORN, B_YEAR, B_TEN, B_ALL, B_ME, B_HELP = ("👶 Родиться", "➡️ Прожить год", "⏩ +10 лет",
                                               "⚡ Прожить до конца", "📊 Моя жизнь", "❓ Помощь")
-MENU = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=B_YEAR)],
-                                     [KeyboardButton(text=B_TEN), KeyboardButton(text=B_ALL)],
-                                     [KeyboardButton(text=B_BORN), KeyboardButton(text=B_ME), KeyboardButton(text=B_HELP)]],
-                           resize_keyboard=True, input_field_placeholder="родиться · год · +10 · до конца")
+
+MENU_BORN = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=B_BORN), KeyboardButton(text=B_HELP)]],
+                                resize_keyboard=True, input_field_placeholder="родиться")
+MENU_CHOICE = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=B_BORN), KeyboardButton(text=B_ME),
+                                             KeyboardButton(text=B_HELP)]],
+                                 resize_keyboard=True, input_field_placeholder="сделай выбор")
+MENU_ALIVE = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=B_YEAR)],
+                                           [KeyboardButton(text=B_TEN), KeyboardButton(text=B_ALL)],
+                                           [KeyboardButton(text=B_BORN), KeyboardButton(text=B_ME),
+                                            KeyboardButton(text=B_HELP)]],
+                                resize_keyboard=True, input_field_placeholder="год · +10 · до конца")
+
 HELP = ("🌍 Один из 8 миллиардов\n\n"
         "Ты рождаешься сегодня — там, где реально рождаются дети: страна выпадает с тем же шансом, "
         "что и у настоящего новорождённого (Индия и Китай часто, Исландия почти никогда). "
-        "Семья, язык, деньги и здоровье зависят от страны.\n\n"
+        "Семья, язык, религия, деньги и здоровье зависят от страны.\n\n"
         f"{B_BORN} — новая жизнь\n{B_YEAR} — год жизни и выбор\n{B_TEN} — промотать 10 лет\n"
         f"{B_ALL} — прожить до конца автоматически\n{B_ME} — как дела сейчас\n\n"
         "В 5, 15, 30, 50 и 70 лет — 🔑 ключевые решения. Можно и просто писать: «родиться», «год», «+10».\n"
-        "Деньги: $ ≈ ₽ ≈ ⭐ (примерный курс).")
+        "Деньги в игре — только в рублях.")
 
 
-# ---------- хранение ----------
+def keyboard(st):
+    if not st:
+        return MENU_BORN
+    if st.get("ev"):
+        return MENU_CHOICE
+    return MENU_ALIVE
+
+
 _conn = None
 def db():
     global _conn
@@ -47,58 +62,67 @@ def store(uid, st):
     db().commit()
 
 
-# ---------- логика ответов (без Telegram, чтобы легко тестировать) ----------
 def event_kb(st):
-    e = game.EV_BY_TITLE[st["ev"]]
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=o["x"], callback_data=f"c:{st['steps']}:{i}")] for i, o in enumerate(e["o"])])
+        [InlineKeyboardButton(text=o, callback_data="c:%d:%d" % (st["steps"], i))]
+        for i, o in enumerate(st["opts"])])
 
 def event_msg(st):
-    return (f"{st['ev']}\n\n{game.card(st)}", event_kb(st))
+    return ("%s\n\n%s" % (st["ev"], game.card(st)), event_kb(st))
 
 def act_born(uid):
     st = game.new_life()
     store(uid, st)
-    return [(game.birth_text(st), MENU)]
+    return [(game.birth_text(st), MENU_BORN)]
 
 def act_year(uid):
     st = load(uid)
-    if not st or st["over"]:
-        return [("Сначала нужно родиться 👶", MENU)]
+    if not st:
+        return [("Сначала нужно родиться 👶\n\nЖми «👶 Родиться»", MENU_BORN)]
+    if st["over"]:
+        return [(game.final_text(st), MENU_BORN)]
     if st.get("ev"):
         return [("Сначала сделай выбор 👇",), event_msg(st)]
     if game.grow(st):
         store(uid, st)
-        return [(game.final_text(st), MENU)]
+        return [(game.final_text(st), MENU_BORN)]
+    ev = game.special_event(st)
+    if ev:
+        txt, opts, key = ev
+        st["ev"], st["opts"], st["evkind"], st["evkey"] = txt, opts, "special", key
+        store(uid, st)
+        return [(txt + "\n\n" + game.card(st), event_kb(st))]
     e = game.draw_event(st)
     if not e:
         store(uid, st)
-        return [(f"Спокойный год, ничего особенного.\n\n{game.card(st)}", MENU)]
-    st["ev"] = e["t"]
+        return [("Спокойный год, ничего особенного.\n\n" + game.card(st), MENU_ALIVE)]
+    st["ev"], st["opts"], st["evkind"], st["evkey"] = e["t"], [o["x"] for o in e["o"]], "normal", None
     store(uid, st)
     return [event_msg(st)]
 
 def act_fast(uid, years):
     st = load(uid)
-    if not st or st["over"]:
-        return [("Сначала нужно родиться 👶", MENU)]
+    if not st:
+        return [("Сначала нужно родиться 👶\n\nЖми «👶 Родиться»", MENU_BORN)]
+    if st["over"]:
+        return [(game.final_text(st), MENU_BORN)]
     st["ev"] = None
     start = st["age"]
     game.auto_live(st, years)
     store(uid, st)
     if st["over"]:
-        return [(game.final_text(st), MENU)]
+        return [(game.final_text(st), MENU_BORN)]
     lines = [s for s in st["log"] if s.split(":")[0].isdigit() and int(s.split(":")[0]) > start][-8:]
-    return [(f"⏩ Прошло {st['age'] - start} лет\n\n" + "\n".join("• " + l for l in lines) +
-             f"\n\n{game.card(st)}", MENU)]
+    return [("⏩ Прошло %d лет\n\n" % (st["age"] - start) + "\n".join("• " + l for l in lines) +
+             "\n\n" + game.card(st), MENU_ALIVE)]
 
 def act_me(uid):
     st = load(uid)
     if not st:
-        return [("Ты ещё не родился 👶", MENU)]
+        return [("Ты ещё не родился 👶\n\nЖми «👶 Родиться»", MENU_BORN)]
     if st["over"]:
-        return [(game.final_text(st), MENU)]
-    return [(f"{st['flag']} {st['name']}, {st['country']}\n💼 {st['job'] or 'пока не работает'}\n\n{game.card(st)}", MENU)]
+        return [(game.final_text(st), MENU_BORN)]
+    return [(("👶" if st["age"] == 0 else "🎂") + " " + game.card(st), MENU_ALIVE)]
 
 def act_choice(uid, data):
     st = load(uid)
@@ -109,12 +133,19 @@ def act_choice(uid, data):
         return None
     if not st or st["over"] or not st.get("ev") or step != st["steps"]:
         return None
-    e = game.EV_BY_TITLE[st["ev"]]
-    choice = e["o"][i]["x"]
-    eff = game.apply(st, e, i)
+    opts = st["opts"]
+    if i < 0 or i >= len(opts):
+        return None
+    if st.get("evkind") == "special":
+        res = game.apply_special(st, st["evkey"], i)
+    else:
+        res = game.apply(st, game.EV_BY_TITLE[st["ev"]], i)
     st["ev"] = None
+    st["opts"] = []
+    st["evkind"] = None
+    st["evkey"] = None
     store(uid, st)
-    return [(f"✅ {choice}\n{eff}\n\n{game.card(st)}", MENU)]
+    return [("✅ %s\n%s\n\n%s" % (opts[i], res, game.card(st)), MENU_ALIVE)]
 
 WORDS = {B_BORN: "born", "родиться": "born", "заново": "born", "новая жизнь": "born",
          B_YEAR: "year", "год": "year", "дальше": "year", "выбор": "year",
@@ -123,16 +154,21 @@ WORDS = {B_BORN: "born", "родиться": "born", "заново": "born", "н
          B_ME: "me", "жизнь": "me", "статус": "me", B_HELP: "help", "помощь": "help"}
 
 def act_text(uid, text):
-    a = WORDS.get((text or "").strip().lower()) or WORDS.get((text or "").strip())
-    if a == "born": return act_born(uid)
-    if a == "year": return act_year(uid)
-    if a == "ten": return act_fast(uid, 10)
-    if a == "all": return act_fast(uid, None)
-    if a == "me": return act_me(uid)
-    return [(HELP, MENU)]
+    t = (text or "").strip()
+    a = WORDS.get(t.lower()) or WORDS.get(t)
+    if a == "born":
+        return act_born(uid)
+    if a == "year":
+        return act_year(uid)
+    if a == "ten":
+        return act_fast(uid, 10)
+    if a == "all":
+        return act_fast(uid, None)
+    if a == "me":
+        return act_me(uid)
+    return [(HELP, MENU_ALIVE)]
 
 
-# ---------- Telegram ----------
 dp = Dispatcher()
 
 async def send(m: Message, msgs):
@@ -141,11 +177,12 @@ async def send(m: Message, msgs):
 
 @dp.message(CommandStart())
 async def on_start(m: Message):
-    await m.answer(HELP, reply_markup=MENU)
+    st = load(m.from_user.id)
+    await m.answer(HELP, reply_markup=MENU_BORN if not st else MENU_ALIVE)
 
 @dp.message(Command("help"))
 async def on_help(m: Message):
-    await m.answer(HELP, reply_markup=MENU)
+    await m.answer(HELP, reply_markup=MENU_ALIVE)
 
 @dp.message(Command("born"))
 async def on_born(m: Message):
