@@ -14,6 +14,7 @@ DB_PATH = os.environ.get("DB_PATH") or ("/data/lives.db" if os.path.isdir("/data
 
 B_BORN, B_YEAR, B_TEN, B_ALL, B_ME, B_HELP = ("👶 Родиться", "➡️ Прожить год", "⏩ +10 лет",
                                               "⚡ Прожить до конца", "📊 Моя жизнь", "❓ Помощь")
+B_NEW = "🔄 Новая жизнь"
 
 MENU_BORN = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=B_BORN), KeyboardButton(text=B_HELP)]],
                                 resize_keyboard=True, input_field_placeholder="родиться")
@@ -22,7 +23,7 @@ MENU_CHOICE = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=B_BORN), Keyboa
                                  resize_keyboard=True, input_field_placeholder="сделай выбор")
 MENU_ALIVE = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=B_YEAR)],
                                            [KeyboardButton(text=B_TEN), KeyboardButton(text=B_ALL)],
-                                           [KeyboardButton(text=B_BORN), KeyboardButton(text=B_ME),
+                                           [KeyboardButton(text=B_NEW), KeyboardButton(text=B_ME),
                                             KeyboardButton(text=B_HELP)]],
                                 resize_keyboard=True, input_field_placeholder="год · +10 · до конца")
 
@@ -82,19 +83,19 @@ def event_msg(st):
 def act_born(uid):
     st = game.new_life()
     store(uid, st)
-    return [(game.birth_text(st), MENU_BORN)]
+    return [(game.birth_text(st), MENU_ALIVE)]
 
 def act_year(uid):
     st = load(uid)
     if not st:
         return [("Сначала нужно родиться 👶\n\nЖми «👶 Родиться»", MENU_BORN)]
     if st.get("over"):
-        return [(game.final_text(st), MENU_BORN)]
+        return [(game.final_text(st), MENU_ALIVE)]
     if st.get("ev"):
         return [("Сначала сделай выбор 👇",), event_msg(st)]
     if game.grow(st):
         store(uid, st)
-        return [(game.final_text(st), MENU_BORN)]
+        return [(game.final_text(st), MENU_ALIVE)]
     ev = game.special_event(st)
     if ev:
         txt, opts, key = ev
@@ -114,13 +115,13 @@ def act_fast(uid, years):
     if not st:
         return [("Сначала нужно родиться 👶\n\nЖми «👶 Родиться»", MENU_BORN)]
     if st.get("over"):
-        return [(game.final_text(st), MENU_BORN)]
+        return [(game.final_text(st), MENU_ALIVE)]
     st["ev"] = None
     start = st["age"]
     game.auto_live(st, years)
     store(uid, st)
     if st.get("over"):
-        return [(game.final_text(st), MENU_BORN)]
+        return [(game.final_text(st), MENU_ALIVE)]
     lines = [s for s in st["log"] if s.split(":")[0].isdigit() and int(s.split(":")[0]) > start][-8:]
     return [("⏩ Прошло %d лет\n\n" % (st["age"] - start) + "\n".join("• " + l for l in lines) +
              "\n\n" + game.card(st), MENU_ALIVE)]
@@ -130,8 +131,8 @@ def act_me(uid):
     if not st:
         return [("Ты ещё не родился 👶\n\nЖми «👶 Родиться»", MENU_BORN)]
     if st.get("over"):
-        return [(game.final_text(st), MENU_BORN)]
-    return [(("👶" if st.get("age") == 0 else "🎂") + " " + game.card(st), MENU_ALIVE)]
+        return [(game.final_text(st), MENU_ALIVE)]
+    return [(game.card(st), MENU_ALIVE)]
 
 def act_choice(uid, data):
     st = load(uid)
@@ -160,17 +161,31 @@ def act_choice(uid, data):
     store(uid, st)
     return [("✅ %s\n%s\n\n%s" % (opts[i], res, game.card(st)), MENU_ALIVE)]
 
-WORDS = {B_BORN: "born", "родиться": "born", "заново": "born", "новая жизнь": "born",
+WORDS = {B_BORN: "born", "родиться": "born",
          B_YEAR: "year", "год": "year", "дальше": "year", "выбор": "year",
          B_TEN: "ten", "+10": "ten", "10": "ten",
          B_ALL: "all", "до конца": "all", "авто": "all",
-         B_ME: "me", "жизнь": "me", "статус": "me", B_HELP: "help", "помощь": "help"}
+         B_ME: "me", "жизнь": "me", "статус": "me", B_HELP: "help", "помощь": "help",
+         B_NEW: "new", "новая жизнь": "new", "заново": "new", "перезапуск": "new"}
+
+def act_new(uid):
+    st = load(uid)
+    if not st:
+        return act_born(uid)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Да, начать заново", callback_data="r:yes"),
+         InlineKeyboardButton(text="↩️ Оставить эту жизнь", callback_data="r:no")]])
+    return [("Начать жизнь заново?\n\nВся текущая жизнь (возраст, деньги, семья, отношения) будет стёрта.",
+             kb)]
+
 
 def act_text(uid, text):
     t = (text or "").strip()
     a = WORDS.get(t.lower()) or WORDS.get(t)
     if a == "born":
         return act_born(uid)
+    if a == "new":
+        return act_new(uid)
     if a == "year":
         return act_year(uid)
     if a == "ten":
@@ -208,6 +223,15 @@ async def on_text(m: Message):
     except Exception as e:
         logging.exception("on_text failed")
         await m.answer("Что-то сломалось. Попробуй «👶 Родиться» заново 🙈")
+
+@dp.callback_query(F.data.startswith("r:"))
+async def on_reset(c: CallbackQuery):
+    await c.answer()
+    if c.data.endswith("yes"):
+        await send(c.message, act_born(c.from_user.id))
+    else:
+        await send(c.message, act_me(c.from_user.id))
+
 
 @dp.callback_query(F.data.startswith("c:"))
 async def on_choice(c: CallbackQuery):
