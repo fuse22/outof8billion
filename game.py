@@ -140,7 +140,7 @@ def card(st):
 
 
 def family_line(st):
-    f = st["family"]
+    f = st.get("family") or "полная семья"
     if f == "полная семья":
         return "отец %s, мать %s" % (st["father"], st["mother"])
     if f == "многодетная семья":
@@ -167,10 +167,10 @@ def birth_text(st):
     t = ["%s сегодня. %s %s, %s, %s." % (born, st["flag"], st["country"], st["place"], month),
          "Тебя зовут %s. Ты %s." % (st["name"], first), "",
          "🗣 Родной язык: %s" % st["lang"],
-         "⛪ Религия семьи: %s" % REL_NAME.get(st["rel"], "народные верования"),
+         "⛪ Религия семьи: %s" % REL_NAME.get(st.get("rel"), "народные верования"),
          "👪 %s" % family_line(st),
          "👥 Братьев и сестёр: %d" % st["sibs"],
-         "💵 Доход семьи: %s" % QUINTILE.get(st["quintile"], "")]
+         "💵 Доход семьи: %s" % QUINTILE.get(st.get("quintile"), "")]
     if st["alco"]:
         t.append("🍺 В доме постоянно пьют. Денег нет, дома покоя нет.")
     elif st["family"] == "детский дом":
@@ -464,8 +464,8 @@ def final_text(st):
     t = ["🪦 %s, %d–%d" % (st["name"], y, y + a),
          "%s в %d %s" % (st["cause"] or "жизнь окончена", a, age_years(a)), "",
          "%s %s · %s · язык: %s" % (st["flag"], st["country"], st["place"], st["lang"]),
-         "⛪ %s · 💵 %s" % (REL_NAME.get(st["rel"], ""), QUINTILE.get(st["quintile"], "")),
-         "👪 %s · братьев и сестёр: %d" % (st["family"], st["sibs"]),
+         "⛪ %s · 💵 %s" % (REL_NAME.get(st.get("rel"), ""), QUINTILE.get(st.get("quintile"), "")),
+         "👪 %s · братьев и сестёр: %d" % (st.get("family"), st.get("sibs", 0)),
          "💼 Работа: %s · 🎓 %s" % (st["job"] or "не работал", st["edu"] or "без высшего"),
          "💍 %s · 👶 детей: %d" % ("в браке" if st["married"] else "без брака", st["kids"]),
          "💰 Осталось: %s" % money(st["money"]), ""]
@@ -498,4 +498,34 @@ def auto_live(st, years=None):
         e = draw_event(st)
         if e:
             apply(st, e, random.randrange(len(e["o"])))
+    return st
+
+
+DEFAULTS = {"rel": "Folk", "quintile": 3, "family_meter": 50, "love": 50, "sibs": 0,
+            "family": "полная семья", "used": [], "log": [], "steps": 0, "ev": None,
+            "evkind": None, "evkey": None, "opts": [], "over": False, "cause": None,
+            "last_result": None, "crush": None, "partner": None, "partner_since": None,
+            "ex": None, "married": False, "married_since": None, "kids": 0, "job": None,
+            "edu": None, "male": True, "name": "?", "born": "2020-01-01", "country": "",
+            "flag": "", "lang": "", "place": "", "iso3": "", "le": 70, "lit": 15, "gdp": 5000,
+            "tribal": False, "remote": False, "alco": False, "has_father": True,
+            "has_mother": True, "health": 60, "happiness": 60, "knowledge": 10, "money": 0,
+            "income": 100, "age": 0, "father": "", "mother": ""}
+
+
+def migrate(st):
+    """Приводит состояние, сохранённое старой версией бота, к новому формату."""
+    if not isinstance(st, dict):
+        return new_life()
+    for k, v in DEFAULTS.items():
+        if k not in st or st[k] is None:
+            st[k] = list(v) if isinstance(v, list) else v
+    st["male"] = bool(st.get("male", True))
+    st["age"] = int(st.get("age") or 0)
+    st["money"] = float(st.get("money") or 0)
+    for k in ("health", "happiness", "knowledge", "family_meter", "love"):
+        try:
+            st[k] = max(0, min(100, int(st.get(k) or 0)))
+        except Exception:
+            st[k] = 50
     return st

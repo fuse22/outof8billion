@@ -55,7 +55,16 @@ def db():
 
 def load(uid):
     r = db().execute("SELECT data FROM lives WHERE uid=?", (uid,)).fetchone()
-    return json.loads(r[0]) if r else None
+    if not r:
+        return None
+    try:
+        st = json.loads(r[0])
+    except Exception:
+        return None
+    try:
+        return game.migrate(st)
+    except Exception:
+        return game.new_life()
 
 def store(uid, st):
     db().execute("INSERT OR REPLACE INTO lives VALUES (?,?)", (uid, json.dumps(st, ensure_ascii=False)))
@@ -79,7 +88,7 @@ def act_year(uid):
     st = load(uid)
     if not st:
         return [("Сначала нужно родиться 👶\n\nЖми «👶 Родиться»", MENU_BORN)]
-    if st["over"]:
+    if st.get("over"):
         return [(game.final_text(st), MENU_BORN)]
     if st.get("ev"):
         return [("Сначала сделай выбор 👇",), event_msg(st)]
@@ -104,13 +113,13 @@ def act_fast(uid, years):
     st = load(uid)
     if not st:
         return [("Сначала нужно родиться 👶\n\nЖми «👶 Родиться»", MENU_BORN)]
-    if st["over"]:
+    if st.get("over"):
         return [(game.final_text(st), MENU_BORN)]
     st["ev"] = None
     start = st["age"]
     game.auto_live(st, years)
     store(uid, st)
-    if st["over"]:
+    if st.get("over"):
         return [(game.final_text(st), MENU_BORN)]
     lines = [s for s in st["log"] if s.split(":")[0].isdigit() and int(s.split(":")[0]) > start][-8:]
     return [("⏩ Прошло %d лет\n\n" % (st["age"] - start) + "\n".join("• " + l for l in lines) +
@@ -120,9 +129,9 @@ def act_me(uid):
     st = load(uid)
     if not st:
         return [("Ты ещё не родился 👶\n\nЖми «👶 Родиться»", MENU_BORN)]
-    if st["over"]:
+    if st.get("over"):
         return [(game.final_text(st), MENU_BORN)]
-    return [(("👶" if st["age"] == 0 else "🎂") + " " + game.card(st), MENU_ALIVE)]
+    return [(("👶" if st.get("age") == 0 else "🎂") + " " + game.card(st), MENU_ALIVE)]
 
 def act_choice(uid, data):
     st = load(uid)
@@ -131,15 +140,19 @@ def act_choice(uid, data):
         step, i = int(step), int(i)
     except ValueError:
         return None
-    if not st or st["over"] or not st.get("ev") or step != st["steps"]:
+    if not st or st.get("over") or not st.get("ev") or step != st.get("steps"):
         return None
-    opts = st["opts"]
+    opts = st.get("opts") or []
     if i < 0 or i >= len(opts):
         return None
     if st.get("evkind") == "special":
         res = game.apply_special(st, st["evkey"], i)
     else:
-        res = game.apply(st, game.EV_BY_TITLE[st["ev"]], i)
+        ev = game.EV_BY_TITLE.get(st["ev"])
+        if ev is None:
+            st["ev"] = None; st["opts"] = []; store(uid, st)
+            return [("Событие устарело, начни год заново 👆", MENU_ALIVE)]
+        res = game.apply(st, ev, i)
     st["ev"] = None
     st["opts"] = []
     st["evkind"] = None
@@ -190,11 +203,19 @@ async def on_born(m: Message):
 
 @dp.message(F.text)
 async def on_text(m: Message):
-    await send(m, act_text(m.from_user.id, m.text))
+    try:
+        await send(m, act_text(m.from_user.id, m.text))
+    except Exception as e:
+        logging.exception("on_text failed")
+        await m.answer("Что-то сломалось. Попробуй «👶 Родиться» заново 🙈")
 
 @dp.callback_query(F.data.startswith("c:"))
 async def on_choice(c: CallbackQuery):
-    res = act_choice(c.from_user.id, c.data)
+    try:
+        res = act_choice(c.from_user.id, c.data)
+    except Exception:
+        logging.exception("act_choice failed")
+        res = None
     if res is None:
         await c.answer("Эта кнопка уже устарела")
         return
