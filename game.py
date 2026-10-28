@@ -84,6 +84,7 @@ def new_life():
     fam = random.choices([f for f, _ in FAMILY_TYPES], [w for _, w in FAMILY_TYPES])[0]
     sibs = random.randint(3, 7) if random.random() * 100 < c.get("multi_pct", 20) else random.randint(0, 2)
     st = {
+        "luck": st_luck,
         "born": datetime.date.today().isoformat(),
         "name": random.choice(FIRST_M if male else FIRST_F), "male": male,
         "father": random.choice(FIRST_M), "mother": random.choice(FIRST_F),
@@ -260,7 +261,9 @@ def draw_event(st):
         pool = [e for e in pool if "remote" in e["tags"]] or pool
     if not pool:
         return None
-    return random.choices(pool, [e["w"] for e in pool])[0]
+    # Часть событий в базе имеет w=0. С таким весом они не выпадают НИКОГДА,
+    # и все жизни идут по одному шаблону. Даём им малый, но ненулевой вес.
+    return random.choices(pool, [max(e["w"], 0.12) for e in pool])[0]
 
 
 def _effect(d=None, m=0):
@@ -537,6 +540,9 @@ def migrate(st):
 # --- События, где решение принимает НЕ персонаж (родители, врачи, государство,
 #     школа, семья). Выбор убирается, исход определяется статистически. ---
 AUTO_TITLES = {
+    "Первый день в садике",
+    "Кружок по выбору",
+    "Спортивная секция",
     "Первый прикорм",
     "Плановая прививка",
     "Жар у младенца",
@@ -602,13 +608,45 @@ def auto_weights(st, e):
             w = [0.25, 0.75]
     elif t == "Поездка с классом":
         w = [0.75, 0.25] if gdp > 6000 else [0.40, 0.60]
+    elif t == "Первый день в садике":
+        f = infra(st)
+        if not f["kindergarten"]:
+            w = [0, 0, 1]
+        else:
+            w = [0.75, 0.25, 0]
+    elif t == "Кружок по выбору":
+        f = infra(st)
+        if not f["clubs"]:
+            w = [0, 0, 0, 1]
+        else:
+            w = [0.34, 0.33, 0.33, 0]
+    elif t == "Спортивная секция":
+        f = infra(st)
+        if not f["sports"]:
+            w = [0, 0, 1]
+        else:
+            w = [0.55, 0.45, 0]
     elif t == "Обязательная служба":
         w = [0.25, 0.75] if (st.get("remote") or gdp < 4000) else [0.80, 0.20]
     else:
         w = [1.0] * len(e.get("o") or [1])
     n = len(e.get("o") or [1])
     if len(w) != n:
-        w = [1.0] * n
+        w = (w + [0.0] * n)[:n]
+    # Личная удача (0..1, своя на каждую жизнь) сдвигает исход.
+    luck = float(st.get("luck", 0.5))
+    good = GOOD_OPTIONS.get(t)
+    if good:
+        for i, o in enumerate(e.get("o") or []):
+            if i >= len(w):
+                continue
+            if o.get("x") in good:
+                w[i] *= 0.55 + 1.1 * luck
+            elif o.get("x") in BAD_OPTIONS.get(t, ()):
+                w[i] *= 1.55 - 1.1 * luck
+        s = sum(w)
+        if s > 0:
+            w = [x / s for x in w]
     return w
 
 
@@ -617,8 +655,16 @@ def auto_apply(st, e):
     opts = e.get("o") or []
     if not opts:
         return 0, ""
+    avail = available_options(st, e)
     w = auto_weights(st, e)
-    i = random.choices(range(len(opts)), weights=w)[0]
+    ws = [(w[i] if i < len(w) else 0.0) for i in range(len(opts))]
+    pool = [i for i in avail if ws[i] > 0]
+    if not pool:
+        pool = list(avail) or list(range(len(opts)))
+    pw = [ws[i] for i in pool]
+    if sum(pw) <= 0:
+        pw = [1.0] * len(pool)
+    i = random.choices(pool, weights=pw)[0]
     res = apply(st, e, i)
     st["ev"] = None
     st["opts"] = []
@@ -689,6 +735,9 @@ OUTCOME_TEXTS = {
 
 
 def outcome_text(e, i):
+    t = auto_text(e, i)
+    if t:
+        return t
     """Живой текст: что именно с тобой сделали."""
     o = (e.get("o") or [])[i]
     t = OUTCOME_TEXTS.get(e.get("t"), {})
@@ -698,3 +747,127 @@ def outcome_text(e, i):
         if k.lower() in o.get("x", "").lower():
             return v
     return "%s — так вышло, и решали это не ты." % o.get("x", "")
+
+INFRA = {}
+
+
+def infra(st):
+    """Что реально доступно персонажу в его стране."""
+    gdp = float(st.get("gdp") or 5000)
+    urb = float(st.get("urb") or 50)
+    lit = float(st.get("lit") or 15)
+    remote = bool(st.get("remote"))
+    tribal = bool(st.get("tribal"))
+    key = (gdp, urb, lit, remote, tribal)
+    if key in INFRA:
+        return INFRA[key]
+    f = {}
+    f["kindergarten"] = (not tribal and not remote and (urb > 35 or gdp > 6000) and gdp > 1200)
+    f["clubs"] = (not tribal and not remote and gdp > 1500 and (urb > 30 or gdp > 5000))
+    f["sports"] = f["clubs"]
+    f["lessons"] = (not remote and gdp > 4500 and (urb > 40 or gdp > 9000))
+    f["electricity"] = gdp > 1200 or urb > 60
+    f["books"] = lit > 50
+    f["internet"] = gdp > 2500 and not remote
+    f["smartphone"] = gdp > 4000 and not remote
+    f["trips"] = gdp > 3000 and not remote and not tribal
+    f["army"] = gdp > 5000 and not remote
+    INFRA[key] = f
+    return f
+
+
+OPT_BLOCK = {
+    "Отдать в садик": "kindergarten", "Пойти, волнуясь": "kindergarten",
+    "Садика не было": None,
+    "Спорт": "sports", "Музыка": "clubs", "Конструктор и техника": "clubs",
+    "Никакого кружка": None,
+    "Записаться": "sports", "Не записываться": None, "Ничего не выбрали": None,
+    "Курс занятий": "lessons", "Само пройдёт": None,
+    "Репетитор": "lessons", "Сам по учебникам": None,
+    "Купить": "smartphone", "Обойтись": None,
+    "Поехать": "trips", "Остаться": None,
+    "Жить при свечах": "electricity", "Семья копит на генератор": "electricity",
+    "Слушать сказки стариков": "books", "Весь день во дворе": None,
+    "Служить": "army", "Получить отсрочку": None,
+    "Ездить в город за связью": "internet", "Учиться по книгам": None,
+}
+
+
+def available_options(st, e):
+    """Индексы опций, возможных в этой стране. Невозможные не показываем."""
+    f = infra(st)
+    out = []
+    for i, o in enumerate(e.get("o") or []):
+        key = OPT_BLOCK.get(o.get("x"))
+        if key and not f.get(key):
+            continue
+        out.append(i)
+    return out or list(range(len(e.get("o") or [])))
+
+
+AUTO_TEXTS = {
+    "Первый день в садике": {
+        "Пойти, волнуясь": "Тебя отвели в первый день в садик: ты шёл, волнуясь, и крепко держал маму за руку.",
+        "Устроить истерику и остаться": "Ты устроил истерику и не пошёл в садик — остался дома, и в этом году решал ты сам.",
+        "Садика не было": "Садника рядом не было — первый день так и не случился, и никто ничего не выбирал.",
+    },
+    "Кружок по выбору": {
+        "Спорт": "Тебя записали в спортивную секцию — выбрали родители, и ты ходил туда, куда решили за тебя.",
+        "Музыка": "Тебя отдали в музыкальную студию — решение приняли в семье, без твоего голоса.",
+        "Конструктор и техника": "Тебя записали в кружок техники — выбрали взрослые, и год ты занимался без выбора.",
+        "Никакого кружка": "Кружков рядом не было — год прошёл без секций, и никто ничего не выбирал.",
+    },
+    "Спортивная секция": {
+        "Записаться": "Тебя записали в спортивную секцию — решили родители, и тренировки шли по их слову.",
+        "Не записываться": "Тебя не записали никуда — так решили в семье, и год ты просто жил без спорта.",
+        "Ничего не выбрали": "Секций рядом не было, и никто ничего не выбирал — год без спорта.",
+    },
+}
+
+
+def auto_text(e, i):
+    o = (e.get("o") or [])[i]
+    x = o.get("x", "")
+    t = AUTO_TEXTS.get(e.get("t")) or {}
+    if x in t:
+        return t[x]
+    for k, v in t.items():
+        if k.lower() == x.lower():
+            return v
+    return None
+
+
+GOOD_OPTIONS = {
+    "Первый прикорм": ("Грудное вскармливание",),
+    "Плановая прививка": ("Сделать вовремя",),
+    "Жар у младенца": ("Вызвать врача",),
+    "Мама долго в больнице после родов": ("Отец берёт отпуск",),
+    "Электричество в доме бывает не всегда": ("Семья копит на генератор",),
+    "Первые слова": ("Много читать вслух",),
+    "Детский сад или дома": ("Отдать в садик",),
+    "Упал с высоты": ("Скорая и снимок",),
+    "Логопед": ("Курс занятий",),
+    "В доме нет книг": ("Слушать сказки стариков",),
+    "Появился щенок": ("Оставить",),
+    "Первый смартфон": ("Купить",),
+    "Поездка с классом": ("Поехать",),
+    "Обязательная служба": ("Получить отсрочку",),
+    "Первый день в садике": ("Пойти, волнуясь",),
+    "Кружок по выбору": ("Спорт", "Музыка", "Конструктор и техника"),
+    "Спортивная секция": ("Записаться",),
+}
+BAD_OPTIONS = {
+    "Первый прикорм": ("Смесь",),
+    "Плановая прививка": ("Отказаться",),
+    "Жар у младенца": ("Сбивать жар дома",),
+    "Мама долго в больнице после родов": ("Остаться с бабушкой",),
+    "Электричество в доме бывает не всегда": ("Жить при свечах",),
+    "Детский сад или дома": ("Дома с мамой",),
+    "Упал с высоты": ("Перевязка дома",),
+    "Логопед": ("Само пройдёт",),
+    "Первый смартфон": ("Обойтись",),
+    "Поездка с классом": ("Остаться",),
+    "Обязательная служба": ("Служить",),
+    "Первый день в садике": ("Устроить истерику и остаться",),
+    "Спортивная секция": ("Не записываться",),
+}

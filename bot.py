@@ -111,7 +111,9 @@ def act_year(uid):
     if not e:
         store(uid, st)
         return [("Спокойный год, ничего особенного.\n\n" + game.card(st), MENU_ALIVE)]
-    st["ev"], st["opts"], st["evkind"], st["evkey"] = e["t"], [o["x"] for o in e["o"]], "normal", None
+    av = game.available_options(st, e)
+    st["ev"], st["opts"], st["evkind"], st["evkey"] = e["t"], [e["o"][i]["x"] for i in av], "normal", None
+    st["optidx"] = av
     store(uid, st)
     return [event_msg(st)]
 
@@ -151,6 +153,8 @@ def act_choice(uid, data):
     opts = st.get("opts") or []
     if i < 0 or i >= len(opts):
         return None
+    av = st.get("optidx") or list(range(len(opts)))
+    real_i = av[i] if i < len(av) else i
     if st.get("evkind") == "special":
         res = game.apply_special(st, st["evkey"], i)
     else:
@@ -158,11 +162,12 @@ def act_choice(uid, data):
         if ev is None:
             st["ev"] = None; st["opts"] = []; store(uid, st)
             return [("Событие устарело, начни год заново 👆", MENU_ALIVE)]
-        res = game.apply(st, ev, i)
+        res = game.apply(st, ev, real_i)
     st["ev"] = None
     st["opts"] = []
     st["evkind"] = None
     st["evkey"] = None
+    st["optidx"] = None
     store(uid, st)
     return [("✅ %s\n%s\n\n%s" % (opts[i], res, game.card(st)), MENU_ALIVE)]
 
