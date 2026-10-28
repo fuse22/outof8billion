@@ -497,7 +497,10 @@ def auto_live(st, years=None):
             break
         e = draw_event(st)
         if e:
-            apply(st, e, random.randrange(len(e["o"])))
+            if is_auto(e):
+                auto_apply(st, e)
+            else:
+                apply(st, e, random.randrange(len(e["o"])))
     return st
 
 
@@ -529,3 +532,96 @@ def migrate(st):
         except Exception:
             st[k] = 50
     return st
+
+
+# --- События, где решение принимает НЕ персонаж (родители, врачи, государство,
+#     школа, семья). Выбор убирается, исход определяется статистически. ---
+AUTO_TITLES = {
+    "Первый прикорм",
+    "Плановая прививка",
+    "Жар у младенца",
+    "Мама долго в больнице после родов",
+    "Электричество в доме бывает не всегда",
+    "Первые слова",
+    "Детский сад или дома",
+    "Упал с высоты",
+    "Логопед",
+    "В доме нет книг",
+    "Появился щенок",
+    "Первый смартфон",
+    "Поездка с классом",
+    "Обязательная служба",
+}
+
+
+def is_auto(e):
+    return bool(e) and e.get("t") in AUTO_TITLES
+
+
+def auto_weights(st, e):
+    """Веса вариантов по статистике страны и обстоятельств (gdp, lit, remote)."""
+    gdp = float(st.get("gdp") or 5000)
+    lit = float(st.get("lit") or 15)
+    t = e.get("t")
+    if t == "Первый прикорм":
+        w = [0.75, 0.25] if gdp > 12000 else ([0.35, 0.65] if gdp < 4000 else [0.60, 0.40])
+    elif t == "Плановая прививка":
+        w = [0.92, 0.08] if gdp > 8000 else [0.60, 0.40]
+    elif t == "Жар у младенца":
+        w = [0.85, 0.15] if gdp > 8000 else [0.45, 0.55]
+    elif t == "Мама долго в больнице после родов":
+        if st.get("has_father") and gdp > 6000:
+            w = [0.25, 0.75]
+        elif st.get("has_father"):
+            w = [0.55, 0.45]
+        else:
+            w = [0.85, 0.15]
+    elif t == "Электричество в доме бывает не всегда":
+        w = [0.15, 0.85] if gdp > 6000 else [0.50, 0.50]
+    elif t == "Первые слова":
+        w = [0.70, 0.30] if lit > 60 else [0.40, 0.60]
+    elif t == "Детский сад или дома":
+        if st.get("remote"):
+            w = [0.20, 0.80]
+        else:
+            w = [0.80, 0.20] if gdp > 6000 else [0.50, 0.50]
+    elif t == "Упал с высоты":
+        w = [0.80, 0.20] if gdp > 8000 else [0.35, 0.65]
+    elif t == "Логопед":
+        w = [0.75, 0.25] if gdp > 8000 else [0.30, 0.70]
+    elif t == "В доме нет книг":
+        w = [0.65, 0.35] if lit > 60 else [0.30, 0.70]
+    elif t == "Появился щенок":
+        w = [0.35, 0.65] if gdp > 8000 else [0.60, 0.40]
+    elif t == "Первый смартфон":
+        if gdp > 10000:
+            w = [0.80, 0.20]
+        elif gdp > 5000:
+            w = [0.60, 0.40]
+        else:
+            w = [0.25, 0.75]
+    elif t == "Поездка с классом":
+        w = [0.75, 0.25] if gdp > 6000 else [0.40, 0.60]
+    elif t == "Обязательная служба":
+        w = [0.25, 0.75] if (st.get("remote") or gdp < 4000) else [0.80, 0.20]
+    else:
+        w = [1.0] * len(e.get("o") or [1])
+    n = len(e.get("o") or [1])
+    if len(w) != n:
+        w = [1.0] * n
+    return w
+
+
+def auto_apply(st, e):
+    """Применяет статистический исход события, где персонаж не решает."""
+    opts = e.get("o") or []
+    if not opts:
+        return 0, ""
+    w = auto_weights(st, e)
+    i = random.choices(range(len(opts)), weights=w)[0]
+    res = apply(st, e, i)
+    st["ev"] = None
+    st["opts"] = []
+    st["evkind"] = None
+    st["evkey"] = None
+    return i, res

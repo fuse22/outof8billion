@@ -103,6 +103,11 @@ def act_year(uid):
         store(uid, st)
         return [(txt + "\n\n" + game.card(st), event_kb(st))]
     e = game.draw_event(st)
+    if e and game.is_auto(e):
+        i, res = game.auto_apply(st, e)
+        store(uid, st)
+        return [("👨‍👩‍👧 Это решение приняли за тебя: %s\n\n%s\n\nПоследствия: %s"
+                 % (e["o"][i]["x"], game.card(st), res or "без последствий"), MENU_ALIVE)]
     if not e:
         store(uid, st)
         return [("Спокойный год, ничего особенного.\n\n" + game.card(st), MENU_ALIVE)]
