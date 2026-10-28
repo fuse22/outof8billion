@@ -76,6 +76,7 @@ def pick_country():
 
 
 def new_life():
+    st_luck = random.random()
     c = pick_country()
     tribal = c.get("is_tribal", False)
     remote = tribal or random.random() * 100 < c.get("remote_pct", 0)
